@@ -1,0 +1,266 @@
+openapi: 3.1.1
+info:
+  title: Limitless Pendant API for Lifelogs
+  version: "1.2"
+  description: |
+    ## Pendant Analyst — System Instructions
+    Timezone: America/New_York
+
+    **Role**
+    Summarize Limitless Pendant lifelogs into structured daily digests and on‑demand meeting summaries using the Pendant API. You have access to two endpoints, `listLifelogs` and `getLifelog`, which you must call through the Action interface.
+
+    **Golden Rules**
+    - Always batch in hourly windows when fetching a day’s data — never attempt a whole day in a single API call.
+    - Never fetch more than 10 lifelogs per call (`limit=10`).
+    - Paginate with `cursor`/`nextCursor` until no more results for each hour.
+    - Keep sections strictly separated. Do not mix details from different lifelogs.
+    - All times are interpreted in `America/New_York` unless explicitly overridden by the user.
+    - If no lifelogs are found for a period, report that and suggest narrowing the window or adding a keyword.
+
+    **Daily Digest Workflow**
+    1. Determine the target date (default is yesterday in the set timezone).
+    2. Split the date into 24 one‑hour windows: `00:00→01:00`, `01:00→02:00`, … `23:00→24:00`.
+    3. For each window:
+       - Call `listLifelogs` with parameters:
+         * `start` = window start time (ISO8601)
+         * `end`   = window end time (ISO8601)
+         * `timezone=America/New_York`
+         * `includeMarkdown=true`
+         * `includeHeadings=true`
+         * `includeContents=false`
+         * `limit=10`
+       - If the response contains a `cursor` or `nextCursor` field, call the same endpoint again with the `cursor` value until all pages are fetched. Process all pages for that hour before moving to the next hour.
+       - Stop paging after 20 pages in a single hour and note this truncation in the output.
+    4. For each lifelog retrieved, build a section with the following structure:
+       - **Header**: `[Tag] Title — Start local time → End local time (Duration)`
+         * Tag: infer `[Work]`, `[Sales]`, or `[Personal]` from the title and content when confident; otherwise omit.
+         * Duration: calculate from the `start` and `end` timestamps.
+       - **Summary**: Two to five sentences summarising the lifelog.
+       - **Decisions**: Bullet list of decisions; if none, state “None noted”.
+       - **Action Items**: Bullet list of tasks with owners if present; if none, state “None noted”.
+       - **Risks/Questions**: Bullet list of risks or open questions; if none, state “None noted”.
+       - **Source**: Include the lifelog ID.
+    5. After processing all hours, combine the sections into a single digest titled `Daily Pendant Summary — YYYY‑MM‑DD`.
+
+    **On‑Demand Queries**
+    - For a single meeting or keyword query, restrict to the smallest relevant time range and still apply hourly windowing and pagination.
+    - Return only the matched lifelog(s) using the same section structure as above.
+
+    **Error Handling**
+    - On HTTP 429 or 5xx responses, wait for the number of seconds indicated by a `Retry‑After` header if present; otherwise wait 3 seconds. Retry up to three times before moving on.
+    - On 4xx errors (other than 429), report the status code and advise the user to correct the request or narrow the time range.
+    - If repeated failures occur for a window, skip that window and record the skipped range in the output.
+
+    **Guardrails**
+    - Never set `includeContents=true`. Raw contents may be extremely large.
+    - Never request a `limit` greater than 10.
+    - Always use `start` and `end` parameters when batching; avoid the `date` parameter for large ranges.
+    - Maintain all timestamps in the specified timezone.
+
+    **Example Prompts**
+    - “Summarise yesterday.”
+    - “Summarise 2025‑08‑08.”
+    - “Find the conversation mentioning ‘FSIS’ in the last 14 days and summarise it.”
+    - “List action items from the past 7 days; group by meeting.”
+
+  servers:
+  - url: https://api.limitless.ai
+  security:
+  - api_key: []
+  components:
+    securitySchemes:
+      api_key:
+        type: apiKey
+        in: header
+        name: X-API-Key
+    schemas:
+      Lifelog:
+        type: object
+        description: A single Pendant lifelog entry.
+        properties:
+          id:
+            type: string
+            description: Unique lifelog ID
+            example: "llg_12345"
+          start:
+            type: string
+            format: date-time
+            description: Start time in ISO 8601 format
+            example: "2025-08-08T13:05:12Z"
+          end:
+            type: string
+            format: date-time
+            description: End time in ISO 8601 format
+            example: "2025-08-08T13:42:10Z"
+          title:
+            type: string
+            description: Optional title of the lifelog
+            example: "Client status call"
+          heading:
+            type: string
+            description: Optional primary heading for the lifelog
+          calendarEventTitle:
+            type: string
+            description: Calendar event title if available
+          headings:
+            type: array
+            description: List of headings from the transcript
+            items:
+              type: string
+          markdown:
+            type: string
+            description: Markdown-formatted transcript or summary when includeMarkdown=true
+          contents:
+            type: string
+            description: Raw contents when includeContents=true (not recommended)
+      LifelogList:
+        type: object
+        description: Wrapper for lists of lifelogs; may vary by endpoint.
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/components/schemas/Lifelog'
+          lifelogs:
+            type: array
+            items:
+              $ref: '#/components/schemas/Lifelog'
+          data:
+            type: object
+            description: Some responses nest lifelogs under data.*
+          meta:
+            type: object
+            description: Metadata including pagination info
+          nextCursor:
+            type: string
+            description: Cursor for pagination when more pages exist
+            example: "eyJwYWdlIjozfQ"
+  paths:
+    /v1/lifelogs:
+      get:
+        operationId: listLifelogs
+        description: |
+          List or search Pendant lifelogs by date or time window.
+          Use `includeMarkdown=true` and `includeHeadings=true` for summarisation-friendly fields.
+          Always paginate when a `cursor` or `nextCursor` is present in the response.
+        parameters:
+          - in: query
+            name: timezone
+            schema:
+              type: string
+              default: America/New_York
+            example: America/New_York
+          - in: query
+            name: date
+            schema:
+              type: string
+              format: date
+            example: "2025-08-08"
+          - in: query
+            name: start
+            schema:
+              type: string
+              format: date-time
+            example: "2025-08-08T13:00:00-04:00"
+          - in: query
+            name: end
+            schema:
+              type: string
+              format: date-time
+            example: "2025-08-08T14:00:00-04:00"
+          - in: query
+            name: search
+            schema:
+              type: string
+              description: Keyword or semantic search term
+            example: "FSIS"
+          - in: query
+            name: limit
+            schema:
+              type: integer
+              default: 10
+              maximum: 10
+            example: 10
+          - in: query
+            name: cursor
+            schema:
+              type: string
+              description: Cursor for pagination when more pages exist
+            example: "eyJwYWdlIjoyfQ"
+          - in: query
+            name: includeMarkdown
+            schema:
+              type: boolean
+              default: true
+            example: true
+          - in: query
+            name: includeHeadings
+            schema:
+              type: boolean
+              default: true
+            example: true
+          - in: query
+            name: includeContents
+            schema:
+              type: boolean
+              default: false
+            example: false
+        responses:
+          "200":
+            description: OK
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/LifelogList'
+          "400":
+            description: Bad request — check parameter formats.
+          "401":
+            description: Unauthorized — verify your API key.
+          "404":
+            description: Not found.
+          "429":
+            description: Rate limit exceeded — respect the Retry‑After header and retry.
+          "500":
+            description: Server error — retry with backoff.
+    /v1/lifelogs/{id}:
+      get:
+        operationId: getLifelog
+        description: Retrieve a single lifelog by its ID.
+        parameters:
+          - in: path
+            name: id
+            required: true
+            schema:
+              type: string
+            example: "llg_12345"
+          - in: query
+            name: includeMarkdown
+            schema:
+              type: boolean
+              default: true
+            example: true
+          - in: query
+            name: includeHeadings
+            schema:
+              type: boolean
+              default: true
+            example: true
+          - in: query
+            name: includeContents
+            schema:
+              type: boolean
+              default: false
+            example: false
+        responses:
+          "200":
+            description: OK
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/Lifelog'
+          "401":
+            description: Unauthorized — verify your API key.
+          "404":
+            description: Not found.
+          "500":
+            description: Server error — retry with backoff.

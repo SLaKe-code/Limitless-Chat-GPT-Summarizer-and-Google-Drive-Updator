@@ -1,0 +1,30 @@
+Smoke Tests for Pendant Summaries
+================================
+
+Use these prompts inside your Custom GPT to verify that the pendant summarisation pipeline works correctly. Each test corresponds to a typical scenario.
+
+1. **Daily digest summarisation**
+   - Prompt: `Summarise yesterday.`
+   - Expectation: The GPT calls `listLifelogs` 24 times (one per hour) with `limit=10`, paginates through any cursors, and returns a single Markdown digest titled **“Daily Pendant Summary — YYYY‑MM‑DD”**. Each section should have a header with a tag (e.g. `[Work]`), title, local start and end time, duration, summary, decisions, action items, risks, and lifelog ID.
+
+2. **Specific date summarisation**
+   - Prompt: `Summarise 2025‑08‑08.`
+   - Expectation: Same as above but for the specified date. Verify that sections appear in chronological order and that the output includes summaries only for that date.
+
+3. **Keyword search within a range**
+   - Prompt: `Find the conversation mentioning “FSIS” in the last 14 days and summarise only that meeting.`
+   - Expectation: The GPT should iterate through the last 14 days, using hourly windows and pagination, but filter for lifelogs containing “FSIS”. It should return just the matched lifelog(s) in the standard section structure. The lifelog ID(s) should be included for traceability.
+
+4. **Action item aggregation**
+   - Prompt: `List action items from the past 7 days; group by meeting.`
+   - Expectation: The GPT should retrieve lifelogs over the last week and extract only the “Action Items” sections. It should group them by lifelog title or time and present a concise list. The original lifelog IDs should be attached.
+
+5. **No data scenario**
+   - Prompt: `Summarise 1990‑01‑01.`
+   - Expectation: Since no lifelogs exist for that date, the GPT should respond that no lifelogs were found and suggest a different date range.
+
+6. **Large day or API pressure**
+   - Prompt: `Summarise 2025‑08‑08.` (on a day with many recordings)
+   - Expectation: The GPT respects the 20‑page per‑hour cap, truncates any hour that exceeds this cap with a note, and continues. It should never exceed `limit=10` per call or set `includeContents=true`.
+
+If all of these tests pass, you can be confident that your Custom GPT and Apps Script are working together correctly to fetch, summarise and store your pendant lifelogs. If you encounter issues, consult the README for troubleshooting steps or verify the script properties and API authentication.
